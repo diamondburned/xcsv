@@ -2,7 +2,6 @@ package xcsv
 
 import (
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -145,15 +144,12 @@ func Marshal[T any](w *csv.Writer, values []T) error {
 func marshalField(rvalue reflect.Value, i int) (string, error) {
 	rfield := rvalue.Field(i)
 	switch rfield.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
-
-		b, err := json.Marshal(rfield.Interface())
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal as JSON: %w", err)
-		}
-		return string(b), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rfield.Int(), 10), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(rfield.Uint(), 10), nil
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(rfield.Float(), 'f', -1, rfield.Type().Bits()), nil
 	case reflect.String:
 		return rfield.String(), nil
 	default:
