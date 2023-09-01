@@ -60,6 +60,14 @@ func TestUnmarshal(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, []struct{ A, B string }{{"foo", "bar"}, {"baz", "qux"}}, v2)
 	})
+
+	t.Run("text marshaling", func(t *testing.T) {
+		v1, err := Unmarshal[struct{ A textMarshaling }](mustReader(t, [][]string{
+			{"foo"},
+		}))
+		assert.NoError(t, err)
+		assert.Equal(t, []struct{ A textMarshaling }{{textMarshaling{"foo"}}}, v1)
+	})
 }
 
 func mustReader(t *testing.T, records [][]string) *csv.Reader {
@@ -76,19 +84,46 @@ func mustReader(t *testing.T, records [][]string) *csv.Reader {
 }
 
 func TestMarshal(t *testing.T) {
-	var b bytes.Buffer
-	err := Marshal(csv.NewWriter(&b), []struct{ A, B int }{
-		{1, 2},
-		{3, 4},
+	t.Run("numbers", func(t *testing.T) {
+		var b bytes.Buffer
+		err := Marshal(csv.NewWriter(&b), []struct{ A, B int }{
+			{1, 2},
+			{3, 4},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "1,2\n3,4\n", b.String())
 	})
-	assert.NoError(t, err)
-	assert.Equal(t, "1,2\n3,4\n", b.String())
 
-	b.Reset()
-	err = Marshal(csv.NewWriter(&b), []struct{ A, B string }{
-		{"foo", "bar"},
-		{"baz", "qux"},
+	t.Run("strings", func(t *testing.T) {
+		var b bytes.Buffer
+		err := Marshal(csv.NewWriter(&b), []struct{ A, B string }{
+			{"foo", "bar"},
+			{"baz", "qux"},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "foo,bar\nbaz,qux\n", b.String())
 	})
-	assert.NoError(t, err)
-	assert.Equal(t, "foo,bar\nbaz,qux\n", b.String())
+
+	t.Run("text marshaling", func(t *testing.T) {
+		var b bytes.Buffer
+		err := Marshal(csv.NewWriter(&b), []struct{ A textMarshaling }{
+			{textMarshaling{"1"}},
+			{textMarshaling{"2"}},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "foo\nfoo\n", b.String())
+	})
+}
+
+type textMarshaling struct {
+	thing string
+}
+
+func (textMarshaling) MarshalText() ([]byte, error) {
+	return []byte("foo"), nil
+}
+
+func (m *textMarshaling) UnmarshalText(text []byte) error {
+	m.thing = string(text)
+	return nil
 }

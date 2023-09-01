@@ -1,6 +1,7 @@
 package xcsv
 
 import (
+	"encoding"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -62,6 +63,10 @@ func Unmarshal[T any](r *csv.Reader) ([]T, error) {
 
 func unmarshalCell(v string, dst reflect.Value) error {
 	t := dst.Type()
+	if textUnmarshaler, ok := dst.Addr().Interface().(encoding.TextUnmarshaler); ok {
+		return textUnmarshaler.UnmarshalText([]byte(v))
+	}
+
 	switch t.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, err := strconv.ParseInt(v, 10, t.Bits())
@@ -143,6 +148,11 @@ func Marshal[T any](w *csv.Writer, values []T) error {
 
 func marshalField(rvalue reflect.Value, i int) (string, error) {
 	rfield := rvalue.Field(i)
+	if textMarshaler, ok := rfield.Interface().(encoding.TextMarshaler); ok {
+		text, err := textMarshaler.MarshalText()
+		return string(text), err
+	}
+
 	switch rfield.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return strconv.FormatInt(rfield.Int(), 10), nil
