@@ -97,6 +97,30 @@ func unmarshalCell(v string, dst reflect.Value) error {
 	}
 }
 
+// ColumnNames returns the names of the fields in a struct.
+// It can be used with [Marshal] to write a CSV file with a column header row.
+// If a field has a `csv` tag, its value will be used instead of the field name.
+// Note that this does not support `csv:"-"`.
+func ColumnNames[T any]() []string {
+	zt := reflect.TypeFor[T]()
+	if zt.Kind() != reflect.Struct {
+		panic("expected struct")
+	}
+
+	numFields := zt.NumField()
+
+	columns := make([]string, numFields)
+	for i := 0; i < numFields; i++ {
+		name := zt.Field(i).Name
+		if tag := zt.Field(i).Tag.Get("csv"); tag != "" {
+			name = tag
+		}
+		columns[i] = name
+	}
+
+	return columns
+}
+
 // MarshalFile writes the CSV representation of values to filepath.
 func MarshalFile[T any](filepath string, values []T) error {
 	f, err := os.Create(filepath)
@@ -113,8 +137,7 @@ func MarshalFile[T any](filepath string, values []T) error {
 
 // Marshal writes the CSV representation of values to w.
 func Marshal[T any](w *csv.Writer, values []T) error {
-	var z T
-	zt := reflect.TypeOf(z)
+	zt := reflect.TypeFor[T]()
 	if zt.Kind() != reflect.Struct {
 		panic("expected struct")
 	}
