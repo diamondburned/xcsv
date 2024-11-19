@@ -31,6 +31,23 @@ func ErrorEarly() UnmarshalOpt {
 	return func(o *unmarshalOpts) { o.errorEarly = true }
 }
 
+// RecordUnmarshalingError is an error that occurs when unmarshaling a single
+// record. It contains thee record itself and the error that occurred.
+type RecordUnmarshalingError struct {
+	Record []string `json:"record"`
+	err    error
+}
+
+// Error returns the error message.
+func (e *RecordUnmarshalingError) Error() string {
+	return fmt.Sprintf("record %q: %s", e.Record, e.err)
+}
+
+// Unwrap returns the underlying error.
+func (e *RecordUnmarshalingError) Unwrap() error {
+	return e.err
+}
+
 // UnmarshalFile reads the CSV file from filepath and unmarshals it into v.
 func UnmarshalFile[T any](filepath string, opts ...UnmarshalOpt) (iter.Seq2[T, error], error) {
 	f, err := os.Open(filepath)
@@ -81,8 +98,10 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 			}
 
 			if !o.allowMissingFields && len(record) != numFields {
-				err := fmt.Errorf("expected %d fields, got %d", numFields, len(record))
-				if !yield(z, err) {
+				if !yield(z, &RecordUnmarshalingError{
+					Record: record,
+					err:    fmt.Errorf("expected %d fields, got %d", numFields, len(record)),
+				}) {
 					return
 				}
 				errored = true
@@ -92,8 +111,10 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 			i := 0
 			for ; i < min(numFields, len(record)); i++ {
 				if err := unmarshalCell(record[i], newValue.Field(i)); err != nil {
-					err = fmt.Errorf("failed to unmarshal field %d: %w", i, err)
-					if !yield(z, err) {
+					if !yield(z, &RecordUnmarshalingError{
+						Record: record,
+						err:    fmt.Errorf("failed to unmarshal field %d: %w", i, err),
+					}) {
 						return
 					}
 					errored = true
