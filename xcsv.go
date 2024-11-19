@@ -6,24 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"reflect"
 	"strconv"
 )
 
 // UnmarshalFile reads the CSV file from filepath and unmarshals it into v.
-func UnmarshalFile[T any](filepath string) ([]T, error) {
+func UnmarshalFile[T any](filepath string) (iter.Seq2[T, error], error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %q: %w", filepath, err)
 	}
 	defer f.Close()
 
-	return Unmarshal[T](csv.NewReader(f))
+	return Unmarshal[T](csv.NewReader(f)), nil
 }
 
 // Unmarshal reads the CSV file from r and unmarshals it into v.
-func Unmarshal[T any](r *csv.Reader) ([]T, error) {
+func Unmarshal[T any](r *csv.Reader) iter.Seq2[T, error] {
 	var z T
 	zt := reflect.TypeOf(z)
 	if zt.Kind() != reflect.Struct {
@@ -31,34 +32,44 @@ func Unmarshal[T any](r *csv.Reader) ([]T, error) {
 	}
 
 	numFields := zt.NumField()
-
-	values := reflect.MakeSlice(reflect.SliceOf(zt), 0, 0)
 	value := reflect.New(zt).Elem()
 
-	for {
-		record, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
+	return func(yield func(T, error) bool) {
+		for {
+			record, err := r.Read()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return
+				}
+				err = fmt.Errorf("failed to read CSV record: %w", err)
+				if !yield(z, err) {
+					return
+				}
 			}
-			return nil, fmt.Errorf("failed to read CSV record: %w", err)
-		}
 
-		// Ensure at least numFields fields are present.
-		if len(record) < numFields {
-			return nil, fmt.Errorf("expected %d fields, got %d", numFields, len(record))
-		}
+			// Ensure at least numFields fields are present.
+			if len(record) < numFields {
+				err := fmt.Errorf("expected %d fields, got %d", numFields, len(record))
+				if !yield(z, err) {
+					return
+				}
+			}
 
-		for i := 0; i < numFields; i++ {
-			if err := unmarshalCell(record[i], value.Field(i)); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal field %d: %w", i, err)
+			for i := 0; i < numFields; i++ {
+				err := unmarshalCell(record[i], value.Field(i))
+				if err != nil {
+					err = fmt.Errorf("failed to unmarshal field %d: %w", i, err)
+					if !yield(z, err) {
+						return
+					}
+				}
+			}
+
+			if !yield(value.Interface().(T), nil) {
+				return
 			}
 		}
-
-		values = reflect.Append(values, value)
 	}
-
-	return values.Interface().([]T), nil
 }
 
 func unmarshalCell(v string, dst reflect.Value) error {
@@ -122,7 +133,7 @@ func ColumnNames[T any]() []string {
 }
 
 // MarshalFile writes the CSV representation of values to filepath.
-func MarshalFile[T any](filepath string, values []T) error {
+func MarshalFile[T any](filepath string, values iter.Seq[T]) error {
 	f, err := os.Create(filepath)
 	if err != nil {
 		return fmt.Errorf("failed to create %q: %w", filepath, err)
@@ -136,7 +147,7 @@ func MarshalFile[T any](filepath string, values []T) error {
 }
 
 // Marshal writes the CSV representation of values to w.
-func Marshal[T any](w *csv.Writer, values []T) error {
+func Marshal[T any](w *csv.Writer, values iter.Seq[T]) error {
 	zt := reflect.TypeFor[T]()
 	if zt.Kind() != reflect.Struct {
 		panic("expected struct")
@@ -144,20 +155,10 @@ func Marshal[T any](w *csv.Writer, values []T) error {
 
 	numFields := zt.NumField()
 
-	rvalues := reflect.ValueOf(values)
-
-	for i := range values {
-		rvalue := rvalues.Index(i)
-
-		record := make([]string, numFields)
-		for i := 0; i < numFields; i++ {
-			v, err := marshalField(rvalue, i)
-			if err != nil {
-				return fmt.Errorf(
-					"failed to marshal %s.%s: %w",
-					zt, zt.Field(i).Name, err)
-			}
-			record[i] = v
+	for v := range values {
+		record, err := fieldsValue(v, numFields)
+		if err != nil {
+			return fmt.Errorf("xcsv: type %s: %w", zt.String(), err)
 		}
 
 		if err := w.Write(record); err != nil {
@@ -167,6 +168,29 @@ func Marshal[T any](w *csv.Writer, values []T) error {
 
 	w.Flush()
 	return w.Error()
+}
+
+// FieldsValue returns the values of the fields in a struct as a slice of
+// strings (a CSV row).
+func FieldsValue(v any) ([]string, error) {
+	return fieldsValue(v, reflect.TypeOf(v).NumField())
+}
+
+func fieldsValue(v any, numFields int) ([]string, error) {
+	rvalue := reflect.ValueOf(v)
+
+	record := make([]string, numFields)
+	for i := 0; i < numFields; i++ {
+		v, err := marshalField(rvalue, i)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"field %q: %w",
+				rvalue.Type().Field(i).Name, err)
+		}
+		record[i] = v
+	}
+
+	return record, nil
 }
 
 func marshalField(rvalue reflect.Value, i int) (string, error) {
