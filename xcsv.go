@@ -14,6 +14,7 @@ import (
 
 type unmarshalOpts struct {
 	allowMissingFields bool
+	errorEarly         bool
 }
 
 // UnmarshalOpt is a function that modifies the behavior of Unmarshal.
@@ -23,6 +24,11 @@ type UnmarshalOpt func(o *unmarshalOpts)
 // the struct. Fields that are missing will be set to their zero value.
 func AllowMissingFields() UnmarshalOpt {
 	return func(o *unmarshalOpts) { o.allowMissingFields = true }
+}
+
+// ErrorEarly stops unmarshalling as soon as an error is encountered.
+func ErrorEarly() UnmarshalOpt {
+	return func(o *unmarshalOpts) { o.errorEarly = true }
 }
 
 // UnmarshalFile reads the CSV file from filepath and unmarshals it into v.
@@ -59,7 +65,8 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 	}
 
 	return func(yield func(T, error) bool) {
-		for {
+		var errored bool
+		for !o.errorEarly || !errored {
 			record, err := r.Read()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
@@ -69,6 +76,8 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 				if !yield(z, err) {
 					return
 				}
+				errored = true
+				continue
 			}
 
 			if !o.allowMissingFields && len(record) != numFields {
@@ -76,6 +85,8 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 				if !yield(z, err) {
 					return
 				}
+				errored = true
+				continue
 			}
 
 			i := 0
@@ -85,6 +96,8 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 					if !yield(z, err) {
 						return
 					}
+					errored = true
+					continue
 				}
 			}
 			for ; i < numFields; i++ {
