@@ -12,19 +12,37 @@ import (
 	"strconv"
 )
 
+type unmarshalOpts struct {
+	allowMissingFields bool
+}
+
+// UnmarshalOpt is a function that modifies the behavior of Unmarshal.
+type UnmarshalOpt func(o *unmarshalOpts)
+
+// AllowMissingFields allows the CSV file to potentially have fewer fields than
+// the struct. Fields that are missing will be set to their zero value.
+func AllowMissingFields() UnmarshalOpt {
+	return func(o *unmarshalOpts) { o.allowMissingFields = true }
+}
+
 // UnmarshalFile reads the CSV file from filepath and unmarshals it into v.
-func UnmarshalFile[T any](filepath string) (iter.Seq2[T, error], error) {
+func UnmarshalFile[T any](filepath string, opts ...UnmarshalOpt) (iter.Seq2[T, error], error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %q: %w", filepath, err)
 	}
 	defer f.Close()
 
-	return Unmarshal[T](csv.NewReader(f)), nil
+	return Unmarshal[T](csv.NewReader(f), opts...), nil
 }
 
 // Unmarshal reads the CSV file from r and unmarshals it into v.
-func Unmarshal[T any](r *csv.Reader) iter.Seq2[T, error] {
+func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
+	var o unmarshalOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	var z T
 	zt := reflect.TypeOf(z)
 	if zt.Kind() != reflect.Struct {
@@ -32,7 +50,13 @@ func Unmarshal[T any](r *csv.Reader) iter.Seq2[T, error] {
 	}
 
 	numFields := zt.NumField()
-	value := reflect.New(zt).Elem()
+
+	newValue := reflect.New(zt).Elem()
+
+	fieldTypes := make([]reflect.Type, numFields)
+	for i := range numFields {
+		fieldTypes[i] = zt.Field(i).Type
+	}
 
 	return func(yield func(T, error) bool) {
 		for {
@@ -47,25 +71,27 @@ func Unmarshal[T any](r *csv.Reader) iter.Seq2[T, error] {
 				}
 			}
 
-			// Ensure at least numFields fields are present.
-			if len(record) < numFields {
+			if !o.allowMissingFields && len(record) != numFields {
 				err := fmt.Errorf("expected %d fields, got %d", numFields, len(record))
 				if !yield(z, err) {
 					return
 				}
 			}
 
-			for i := 0; i < numFields; i++ {
-				err := unmarshalCell(record[i], value.Field(i))
-				if err != nil {
+			i := 0
+			for ; i < min(numFields, len(record)); i++ {
+				if err := unmarshalCell(record[i], newValue.Field(i)); err != nil {
 					err = fmt.Errorf("failed to unmarshal field %d: %w", i, err)
 					if !yield(z, err) {
 						return
 					}
 				}
 			}
+			for ; i < numFields; i++ {
+				newValue.Field(i).Set(reflect.Zero(fieldTypes[i]))
+			}
 
-			if !yield(value.Interface().(T), nil) {
+			if !yield(newValue.Interface().(T), nil) {
 				return
 			}
 		}

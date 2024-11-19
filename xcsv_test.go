@@ -66,11 +66,20 @@ func TestUnmarshal(t *testing.T) {
 		v1 := Unmarshal[struct{ A textMarshaling }](mustReader(t, [][]string{
 			{"foo"},
 		}))
-		// assert.NoError(t, err)
-		// assert.Equal(t, []struct{ A textMarshaling }{{textMarshaling{"foo"}}}, v1)
 		assertIterSlice(t, v1, []struct{ A textMarshaling }{{
 			textMarshaling{"foo"},
 		}})
+	})
+
+	t.Run("allow missing fields", func(t *testing.T) {
+		v1 := Unmarshal[struct{ A, B int }](mustReader(t, [][]string{
+			{"1"},
+			{"3"},
+		}), AllowMissingFields())
+		assertIterSlice(t, v1, []struct{ A, B int }{
+			{1, 0},
+			{3, 0},
+		})
 	})
 }
 
