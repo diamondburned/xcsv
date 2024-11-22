@@ -9,19 +9,24 @@ import (
 	"iter"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 )
 
 type unmarshalOpts struct {
 	allowMissingFields bool
 	errorEarly         bool
+	skipHeader         bool
 }
 
 // UnmarshalOpt is a function that modifies the behavior of Unmarshal.
 type UnmarshalOpt func(o *unmarshalOpts)
 
-// AllowMissingFields allows the CSV file to potentially have fewer fields than
-// the struct. Fields that are missing will be set to their zero value.
+// AllowMissingFields allows the CSV file to potentially have fewer columns than
+// the struct. Columns that are missing will be set to their zero value.
+//
+// Note that Unmarshal will always allow the CSV file to have *more* columns
+// than the struct regardless if this option is used.
 func AllowMissingFields() UnmarshalOpt {
 	return func(o *unmarshalOpts) { o.allowMissingFields = true }
 }
@@ -31,16 +36,23 @@ func ErrorEarly() UnmarshalOpt {
 	return func(o *unmarshalOpts) { o.errorEarly = true }
 }
 
+// SkipHeader skips the first row of the CSV file if it matches the column
+// names of the struct.
+func SkipHeader() UnmarshalOpt {
+	return func(o *unmarshalOpts) { o.skipHeader = true }
+}
+
 // RecordUnmarshalingError is an error that occurs when unmarshaling a single
 // record. It contains thee record itself and the error that occurred.
 type RecordUnmarshalingError struct {
 	Record []string `json:"record"`
+	Line   int      `json:"line"`
 	err    error
 }
 
 // Error returns the error message.
 func (e *RecordUnmarshalingError) Error() string {
-	return fmt.Sprintf("record %q: %s", e.Record, e.err)
+	return fmt.Sprintf("error at record %d %q: %s", e.Line, e.Record, e.err)
 }
 
 // Unwrap returns the underlying error.
@@ -83,7 +95,7 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 
 	return func(yield func(T, error) bool) {
 		var errored bool
-		for !o.errorEarly || !errored {
+		for line := 0; !o.errorEarly || !errored; line++ {
 			record, err := r.Read()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
@@ -97,10 +109,11 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 				continue
 			}
 
-			if !o.allowMissingFields && len(record) != numFields {
+			if !o.allowMissingFields && len(record) < numFields {
 				if !yield(z, &RecordUnmarshalingError{
 					Record: record,
-					err:    fmt.Errorf("expected %d fields, got %d", numFields, len(record)),
+					Line:   line,
+					err:    fmt.Errorf("wanted exactly %d columns but record had %d", numFields, len(record)),
 				}) {
 					return
 				}
@@ -108,12 +121,25 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 				continue
 			}
 
-			i := 0
-			for ; i < min(numFields, len(record)); i++ {
-				if err := unmarshalCell(record[i], newValue.Field(i)); err != nil {
+			// This is the same if allowMissingFields is false but allows us to
+			// skip columns if it's true.
+			numCols := min(numFields, len(record))
+
+			if line == 0 && o.skipHeader {
+				columnNames := ColumnNames[T]()
+				if slices.Equal(record[:numCols], columnNames[:numCols]) {
+					continue
+				}
+				// Not the header, so treat it as a normal record.
+			}
+
+			col := 0
+			for ; col < numCols; col++ {
+				if err := unmarshalCell(record[col], newValue.Field(col)); err != nil {
 					if !yield(z, &RecordUnmarshalingError{
 						Record: record,
-						err:    fmt.Errorf("failed to unmarshal field %d: %w", i, err),
+						Line:   line,
+						err:    fmt.Errorf("failed to unmarshal field %d: %w", col, err),
 					}) {
 						return
 					}
@@ -121,8 +147,8 @@ func Unmarshal[T any](r *csv.Reader, opts ...UnmarshalOpt) iter.Seq2[T, error] {
 					continue
 				}
 			}
-			for ; i < numFields; i++ {
-				newValue.Field(i).Set(reflect.Zero(fieldTypes[i]))
+			for ; col < numFields; col++ {
+				newValue.Field(col).Set(reflect.Zero(fieldTypes[col]))
 			}
 
 			if !yield(newValue.Interface().(T), nil) {
